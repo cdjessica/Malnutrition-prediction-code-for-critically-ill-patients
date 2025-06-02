@@ -1,0 +1,592 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri May 30 00:49:18 2025
+
+@author: Administrator
+"""
+
+# XGBoost external validation data
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from imblearn.over_sampling import SMOTE 
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.metrics import (classification_report, roc_auc_score, roc_curve, 
+                            precision_recall_curve, auc, f1_score, precision_score, 
+                            recall_score, accuracy_score, brier_score_loss, 
+                            confusion_matrix)
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
+import matplotlib.pyplot as plt
+from sklearn.calibration import calibration_curve
+from sklearn.utils import resample
+import scipy.stats as st
+import seaborn as sns
+from matplotlib.gridspec import GridSpec
+import shap
+from sklearn.inspection import PartialDependenceDisplay
+import warnings
+
+# Ignore warnings
+warnings.filterwarnings('ignore')
+
+# Set SHAP parameters
+shap.initjs()
+plt.rcParams['font.family'] = 'Simhei'  
+plt.rcParams['figure.dpi'] = 300       
+plt.rcParams['savefig.dpi'] = 600    
+plt.rcParams['axes.linewidth'] = 1.2   
+plt.rcParams['font.size'] = 12         
+
+'''
+Read data and convert data types
+'''
+data = pd.read_csv('D://Anaconda//39_features_3class_data.csv')
+
+# Create column name mapping dictionary
+column_mapping = {
+    "X9": "BMI",
+    "X8": "Age",
+    "X5": "Reduced Intake",
+    "X15": "Neutrophils",
+    "X28": "Magnesium Ion",
+    "X34": "Total Bilirubin",
+    "X30": "Platelets",
+    "X24": "PaO2",
+    "X32": "Serum Creatinine",
+    "X19": "IL-6",
+    "X22": "hs-CRP",
+    "X10": "Total Protein",
+    "X18": "Fasting Blood Glucose",
+    "X12": "Hemoglobin",
+    "X11": "Albumin",
+    "X23": "pH value",
+    "X26": "Sodium Ion"
+}
+
+# Rename columns
+data.rename(columns=column_mapping, inplace=True)
+
+# Output modified dataframe information
+print(data.head())
+print(data.info())
+
+# Convert object-type columns to numeric 
+object_columns = data.select_dtypes(include=['object']).columns
+
+# Process each column in loop
+for col in object_columns:
+    data[col] = pd.to_numeric(data[col], errors='coerce')
+
+# Display converted DataFrame 
+print(data)
+data.info()
+Variable_Name = data.columns 
+
+'''
+Missing value imputation using Random Forest
+'''
+# Check missing values in each variable
+print(pd.isna(data).sum())
+
+# Visualize missing value distribution 
+import missingno as msno
+msno.matrix(data, figsize=(16, 10), width_ratios=(13, 2), color=(0.25, 0.25, 0.5))
+plt.show()
+
+# Remove columns with less than 30 non-null values 
+data = data.dropna(axis='columns', thresh=30)
+
+# Check data types 
+print(data.dtypes)
+
+# List of variables without missing values
+estimate = ['X1', 'X2', 'X3', 'X4',
+            'Reduced Intake',  'X6', 'X7', 'Age',  'Total Protein', 'Albumin',
+            'Hemoglobin', 'X13', 'X14', 'Neutrophils',
+            'X17', 'Fasting Blood Glucose',
+            'X25', 'Sodium Ion', 'X27', 'Platelets', 'X31', 'Serum Creatinine', 'X33', 'Total Bilirubin',
+            'X35', 'X36', 'X37', 'X38', 'X39', 'Y']
+
+# Random Forest imputation function
+def set_missing(df, estimate_list, miss_col):
+    """Process dataframe: df=input dataframe, estimate_list=features for estimation, miss_col=target column with missing values; modifies dataframe in-place"""
+    col_list = estimate_list
+    col_list.append(miss_col)
+    process_df = df.loc[:, col_list]
+    class_le = LabelEncoder()
+    for i in col_list[:-1]:
+        process_df.loc[:, i] = class_le.fit_transform(process_df.loc[:, i].values)
+    # Split into known and unknown subsets
+    known = process_df[process_df[miss_col].notnull()].values
+    known[:, -1] = class_le.fit_transform(known[:, -1])
+    unknown = process_df[process_df[miss_col].isnull()].values
+    # X: feature values
+    X = known[:, :-1]
+    # y: target values 
+    y = known[:, -1]
+    # Fit RandomForestRegressor 
+    rfr = RandomForestRegressor(random_state=2, n_estimators=200, max_depth=4, n_jobs=-1)
+    rfr.fit(X, y)
+    # Predict missing values
+    predicted = rfr.predict(unknown[:, :-1]).round(0).astype(int)
+    predicted = class_le.inverse_transform(predicted)
+    #print(predicted)
+    # Fill missing values
+    df.loc[(df[miss_col].isnull()), miss_col] = predicted
+    return df
+
+set_missing(data, estimate, 'BMI')
+set_missing(data, estimate, 'X16')
+set_missing(data, estimate, 'IL-6')
+set_missing(data, estimate, 'X20')
+set_missing(data, estimate, 'X21')
+set_missing(data, estimate, 'hs-CRP')
+set_missing(data, estimate, 'pH value')
+set_missing(data, estimate, 'PaO2')
+set_missing(data, estimate, 'Magnesium Ion')
+set_missing(data, estimate, 'X29')
+
+data.isnull().any() # Check remaining missing values after imputation
+data.describe()
+
+# Split dataset into features and target
+X = data.iloc[:, :-1]
+y = data.iloc[:, -1]
+
+feature_name = X.columns # Feature names 
+
+# Standardize continuous variables
+scaler = StandardScaler()
+X.iloc[:, 7:] = scaler.fit_transform(X.iloc[:, 7:])
+
+from collections import Counter
+print(Counter(y))
+smote = SMOTE(random_state=1)
+X_resampled, y_resampled = smote.fit_resample(X, y)
+print(Counter(y_resampled))
+
+'''
+Random Forest RFECV feature selection 
+'''
+from sklearn.feature_selection import RFECV
+
+# Initialize Random Forest classifier
+RFC = RandomForestClassifier(n_estimators=100, random_state=42)
+
+# Create RFECV instance 
+rfecv = RFECV(estimator=RFC, step=1, cv=5, scoring='accuracy')
+
+# Fit model
+rfecv.fit(X, y)
+
+# Print selected feature count
+print("Optimal number of features : %d" % rfecv.n_features_)
+
+# Get best feature set 
+best_features = rfecv.support_
+
+# Get feature importance
+best_feature_importance = rfecv.estimator_.feature_importances_
+
+# Get feature names
+feature_names = X.columns
+best_feature_names = [feature_names[i] for i in range(len(feature_names)) if best_features[i]]
+
+# Print selected features and importance
+print("Best Features:", best_feature_names)
+print("Best Feature Importance:", best_feature_importance)
+
+# Sort feature importance 
+sorted_indices = np.argsort(best_feature_importance)
+sorted_features = [best_feature_names[i] for i in sorted_indices]
+sorted_importance = np.sort(best_feature_importance)
+
+# Get optimal feature subset 
+feature_names = X.columns
+feature_mask = rfecv.support_
+selected_features = [feature for feature, mask in zip(feature_names, feature_mask) if mask]
+print("Selected Features:", selected_features)
+
+# Select important features 
+X_selected = rfecv.transform(X)
+X_selected = pd.DataFrame(X_selected)
+X_selected.columns = selected_features
+
+# Split dataset into 80% train and 20% test 
+X_train, X_test, y_train, y_test = train_test_split(X_selected, y, test_size=0.19888, random_state=42)
+
+# Grid search for XGBoost training 
+from sklearn.model_selection import train_test_split, GridSearchCV
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score
+
+# Define XGBoost model
+xgb_model = XGBClassifier()
+
+# Define parameter grid
+param_grids = {
+    'n_estimators': [50, 100, 200],
+    'max_depth': [3, 5, 7, 9],
+    'learning_rate': [0.01, 0.1, 0.2],
+}
+
+# Perform grid search
+grid_search = GridSearchCV(estimator=xgb_model, param_grid=param_grids, cv=5, scoring='accuracy', n_jobs=-1, verbose=1)
+grid_search.fit(X_train, y_train)
+
+# Output best parameters
+print("Best Parameters:", grid_search.best_params_)
+xgb_model = grid_search.best_estimator_
+
+# External dataset validation
+from sklearn.metrics import accuracy_score, precision_recall_curve, roc_curve, auc, average_precision_score, classification_report
+import matplotlib.pyplot as plt
+from sklearn.calibration import calibration_curve
+
+# Load external dataset
+data = pd.read_excel('D:\Anaconda\External validation set.xlsx')
+
+# Extract features and target 
+X = data.iloc[:, 1:-1]
+y = data.iloc[:, -1]
+
+# Align column names with training data 
+X = X.rename(columns={
+    'Reduced Energy Intake': 'Reduced Intake',
+    'Sodium Ions': 'Sodium Ion',
+    'Fasting Blood Glucose Value': 'Fasting Blood Glucose',
+    'Magnesium Ions': 'Magnesium Ion',
+    'Neutrophil Count': 'Neutrophils',
+    'Platelet Count': 'Platelets',
+    'pH Value': 'pH value'
+})
+
+# Reorder columns to match training data
+X = X[xgb_model.feature_names_in_]
+
+# Standardize continuous variables
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
+
+# Make predictions on external test set
+y_pred = xgb_model.predict(X)
+y_pred_prob = xgb_model.predict_proba(X)
+
+# Calculate evaluation metrics and confidence intervals
+ 
+# 1. Calculate various evaluation metrics 
+accuracy = accuracy_score(y, y_pred)
+precision = precision_score(y, y_pred, average='macro')
+recall = recall_score(y, y_pred, average='macro')
+f1 = f1_score(y, y_pred, average='macro')
+
+# Calculate AUC-ROC (multiclass)
+n_classes = len(np.unique(y))
+fpr = dict()
+tpr = dict()
+roc_auc = dict()
+for i in range(n_classes):
+    fpr[i], tpr[i], _ = roc_curve((y == i).astype(int), y_pred_prob[:, i])
+    roc_auc[i] = auc(fpr[i], tpr[i])
+auc_roc = np.mean(list(roc_auc.values()))
+
+# Calculate AUC-PR (multiclass)
+precision_dict = dict()
+recall_dict = dict()
+auc_pr = dict()
+for i in range(n_classes):
+    precision_dict[i], recall_dict[i], _ = precision_recall_curve((y == i).astype(int), y_pred_prob[:, i])
+    auc_pr[i] = auc(recall_dict[i], precision_dict[i])
+auc_pr_score = np.mean(list(auc_pr.values()))
+
+# 2. Calculate Brier Score 
+# Convert true labels to one-hot encoding
+y_onehot = pd.get_dummies(y).values
+brier_score = np.mean(np.sum((y_onehot - y_pred_prob) ** 2, axis=1))
+
+# 3. Calculate Expected Calibration Error (ECE)
+def expected_calibration_error(y_true, y_pred_prob, n_bins=10):
+    """
+    Calculate Expected Calibration Error (ECE)
+    """
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_lowers = bin_edges[:-1]
+    bin_uppers = bin_edges[1:]
+    
+    ece = 0
+    for i in range(n_classes):
+        true_class = (y_true == i)
+        pred_prob = y_pred_prob[:, i]
+        
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+            in_bin = np.logical_and(pred_prob >= bin_lower, pred_prob < bin_upper)
+            prop_in_bin = np.mean(in_bin)
+            
+            if prop_in_bin > 0:
+                true_prop = np.mean(true_class[in_bin])
+                pred_prop = np.mean(pred_prob[in_bin])
+                ece += np.abs(true_prop - pred_prop) * prop_in_bin
+                
+    return ece / n_classes
+
+ece = expected_calibration_error(y, y_pred_prob)
+
+# 4. Calculate 95% Confidence Interval (using Bootstrap)
+def bootstrap_metric(y_true, y_pred, y_pred_prob, metric_func, n_bootstrap=1000):
+    """
+    Calculate 95% confidence interval for metrics using Bootstrap method
+    """
+    scores = []
+    n_samples = len(y_true)
+    
+    for _ in range(n_bootstrap):
+        indices = np.random.choice(n_samples, n_samples, replace=True)
+        y_true_resampled = y_true.iloc[indices] if isinstance(y_true, pd.Series) else y_true[indices]
+        y_pred_resampled = y_pred[indices]
+        y_pred_prob_resampled = y_pred_prob[indices]
+        
+        if metric_func.__name__ == 'expected_calibration_error':
+            score = metric_func(y_true_resampled, y_pred_prob_resampled)
+        elif metric_func.__name__ == 'brier_score_loss':
+            # Special handling for multiclass Brier Score 
+            y_onehot = pd.get_dummies(y_true_resampled).values
+            score = np.mean(np.sum((y_onehot - y_pred_prob_resampled) ** 2, axis=1))
+        elif metric_func.__name__ == 'roc_auc_score':
+            # Special handling for multiclass AUC-ROC
+            score = np.mean([roc_auc_score((y_true_resampled == i).astype(int), 
+                                          y_pred_prob_resampled[:, i]) 
+                            for i in range(n_classes)])
+        elif metric_func.__name__ == 'average_precision_score':
+            # Special handling for multiclass AUC-PR 
+            score = np.mean([average_precision_score((y_true_resampled == i).astype(int), 
+                                                   y_pred_prob_resampled[:, i]) 
+                            for i in range(n_classes)])
+        else:
+            # For other standard metrics 
+            score = metric_func(y_true_resampled, y_pred_resampled)
+        scores.append(score)
+    
+    mean_score = np.mean(scores)
+    ci_lower = np.percentile(scores, 2.5)
+    ci_upper = np.percentile(scores, 97.5)
+    return mean_score, ci_lower, ci_upper
+
+# Calculate confidence intervals for each metric
+accuracy_mean, accuracy_lower, accuracy_upper = bootstrap_metric(y, y_pred, y_pred_prob, accuracy_score)
+precision_mean, precision_lower, precision_upper = bootstrap_metric(y, y_pred, y_pred_prob, 
+                                                                   lambda y_true, y_pred: precision_score(y_true, y_pred, average='macro'))
+recall_mean, recall_lower, recall_upper = bootstrap_metric(y, y_pred, y_pred_prob, 
+                                                          lambda y_true, y_pred: recall_score(y_true, y_pred, average='macro'))
+f1_mean, f1_lower, f1_upper = bootstrap_metric(y, y_pred, y_pred_prob, 
+                                              lambda y_true, y_pred: f1_score(y_true, y_pred, average='macro'))
+auc_roc_mean, auc_roc_lower, auc_roc_upper = bootstrap_metric(y, y_pred, y_pred_prob, roc_auc_score)
+auc_pr_mean, auc_pr_lower, auc_pr_upper = bootstrap_metric(y, y_pred, y_pred_prob, average_precision_score)
+brier_mean, brier_lower, brier_upper = bootstrap_metric(y, y_pred, y_pred_prob, brier_score_loss)
+ece_mean, ece_lower, ece_upper = bootstrap_metric(y, y_pred, y_pred_prob, expected_calibration_error)
+
+# Print evaluation metrics and confidence intervals 
+print("\n" + "="*50)
+print("XGBoost Model Performance Evaluation on External Validation Set")
+print("="*50)
+print(f"Accuracy: {accuracy:.2f} (95% CI: {accuracy_lower:.2f}-{accuracy_upper:.2f})")
+print(f"Precision: {precision:.2f} (95% CI: {precision_lower:.2f}-{precision_upper:.2f})")
+print(f"Recall: {recall:.2f} (95% CI: {recall_lower:.2f}-{recall_upper:.2f})")
+print(f"F1 Score: {f1:.2f} (95% CI: {f1_lower:.2f}-{f1_upper:.2f})")
+print(f"AUC-ROC: {auc_roc:.2f} (95% CI: {auc_roc_lower:.2f}-{auc_roc_upper:.2f})")
+print(f"AUC-PR: {auc_pr_score:.2f} (95% CI: {auc_pr_lower:.2f}-{auc_pr_upper:.2f})")
+print(f"Brier Score: {brier_score:.2f}")
+print(f"Expected Calibration Error (ECE): {ece:.2f}")
+print("="*50 + "\n")
+
+# Output classification report 
+print("Classification Report:")
+print(classification_report(y, y_pred))
+
+# Plot curves 
+
+# 1. Plot ROC curves 
+plt.figure(figsize=(10, 8))
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+          '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+
+# Plot ROC curves for each class 
+for i in range(n_classes):
+    plt.plot(fpr[i], tpr[i], color=colors[i], lw=2,
+             label=f'Class {i} (AUC = {roc_auc[i]:.2f})')
+
+# Plot random guess line
+plt.plot([0,  1], [0, 1], 'k--', lw=2)
+plt.xlim([0.0,  1.0])
+plt.ylim([0.0,  1.05])
+plt.xlabel('False Positive Rate (FPR)', fontsize=14)
+plt.ylabel('True Positive Rate (TPR)', fontsize=14)
+plt.title('XGBoost Multiclass ROC Curve', fontsize=16)
+plt.legend(loc="lower right", fontsize=12)
+plt.grid(True,  alpha=0.3)
+plt.tight_layout() 
+plt.savefig('XGBoost_ROC_Curve.png',  dpi=300, bbox_inches='tight')
+plt.show() 
+
+# 2. Plot PR curves 
+plt.figure(figsize=(10, 8))
+for i in range(n_classes):
+    plt.plot(recall_dict[i], precision_dict[i], color=colors[i], lw=2,
+             label=f'Class {i} (AUC = {auc_pr[i]:.2f})')
+
+# Calculate baseline for random guess 
+baseline = np.sum(y_onehot, axis=0) / len(y)
+for i in range(n_classes):
+    plt.axhline(y=baseline[i], color=colors[i], linestyle='--', alpha=0.5)
+
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('Recall', fontsize=14)
+plt.ylabel('Precision', fontsize=14)
+plt.title('XGBoost Multiclass PR Curve', fontsize=16)
+plt.legend(loc="upper right", fontsize=12)
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('XGBoost_PR_Curve.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# 3. Plot calibration curves 
+plt.figure(figsize=(10, 10))
+ax_calibration_curve = plt.subplot(111)
+
+# Plot calibration curves for each class
+for i in range(n_classes):
+    true_class = (y == i)
+    prob_true, prob_pred = calibration_curve(true_class, y_pred_prob[:, i], n_bins=10, strategy='quantile')
+    
+    # Plot calibration curve
+    ax_calibration_curve.plot(prob_pred, prob_true, "s-", label=f'Class {i}')
+    
+    # Add histogram
+    ax_calibration_curve.hist(y_pred_prob[:, i], range=(0, 1), bins=10, 
+                             label=f'Class {i} prediction probabilities', alpha=0.3, density=True)
+
+# Plot ideal calibration line 
+ax_calibration_curve.plot([0, 1], [0, 1], "k:", label="Ideal calibration")
+
+ax_calibration_curve.set_xlabel("Predicted Probability", fontsize=14)
+ax_calibration_curve.set_ylabel("True Probability", fontsize=14)
+ax_calibration_curve.set_title("XGBoost Calibration Curve", fontsize=16)
+ax_calibration_curve.legend(loc="upper left", fontsize=12)
+ax_calibration_curve.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('XGBoost_Calibration_Curve.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+'''
+Model Explainability with SHAP and PDP for External Validation
+'''
+# 1. SHAP Analysis
+explainer = shap.TreeExplainer(xgb_model)
+shap_values = explainer(X)  
+
+# SHAP Summary Plot
+plt.figure(figsize=(12, 8))
+shap.summary_plot(shap_values.values, X, feature_names=xgb_model.feature_names_in_, show=False)
+plt.title("SHAP Feature Importance for XGBoost (External Validation)", fontsize=16)
+plt.tight_layout()
+plt.savefig('SHAP_Summary_External.png', dpi=300)
+plt.show()
+
+# SHAP Bar Plot
+plt.figure(figsize=(12, 8))
+shap.summary_plot(shap_values.values, X, feature_names=xgb_model.feature_names_in_, plot_type="bar", show=False)
+plt.title("SHAP Feature Importance (Bar Plot, External Validation)", fontsize=16)
+plt.tight_layout()
+plt.savefig('SHAP_Bar_External.png', dpi=300)
+plt.show()
+
+# Waterfall plot
+sample_idx = 0  # Select a sample for explanation
+
+# Get predicted class
+predicted_class = xgb_model.predict(X[sample_idx].reshape(1, -1))[0]
+
+# Create explanation object
+shap_explanation = shap.Explanation(
+    values=shap_values.values[predicted_class][sample_idx],
+    base_values=shap_values.base_values[predicted_class][sample_idx],
+    data=X[sample_idx],
+    feature_names=xgb_model.feature_names_in_
+)
+
+# Use waterfall plot
+plt.figure(figsize=(12, 6))
+shap.plots.waterfall(shap_explanation, max_display=15, show=False)
+plt.title(f"SHAP Waterfall Plot for Sample {sample_idx} (Class {predicted_class}) (External)", fontsize=14)
+plt.tight_layout()
+plt.savefig('SHAP_Waterfall_Plot_External.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# 2. Partial Dependence Plots (PDP) - External Validation
+# Select top 3 features
+top_features = sorted_features[-3:]
+
+# Create figure and subplots
+fig, axs = plt.subplots(3, 3, figsize=(18, 15))
+plt.subplots_adjust(hspace=0.4, wspace=0.3)
+
+# Plot PDP for each feature and each class
+for i, feature in enumerate(top_features):
+    for class_idx in range(3):  # Three classes
+        # Plot partial dependence on current subplot
+        PartialDependenceDisplay.from_estimator(
+            xgb_model, 
+            X, 
+            features=[feature],
+            target=class_idx,  # Specify target class
+            feature_names=xgb_model.feature_names_in_, 
+            ax=axs[class_idx, i],
+            line_kw={"color": "red", "linewidth": 3}
+        )
+        axs[class_idx, i].set_title(f'Class {class_idx}: PDP for {feature}', fontsize=12)
+        axs[class_idx, i].set_xlabel(feature, fontsize=10)
+        axs[class_idx, i].set_ylabel(f"P(class={class_idx})", fontsize=10)
+        axs[class_idx, i].grid(alpha=0.3)
+
+plt.suptitle("Partial Dependence Plots for Top Features by Class (External Validation)", fontsize=16)
+plt.tight_layout(rect=[0, 0, 1, 0.96])  # Make space for title
+plt.savefig('Partial_Dependence_Plots_External.png', dpi=300)
+plt.show()
+
+# 3. SHAP Dependence Plots - External Validation
+for feature in top_features:
+    plt.figure(figsize=(10, 6))
+    
+    # Get feature index
+    feature_idx = list(xgb_model.feature_names_in_).index(feature)
+    
+    # Plot dependence for each class
+    for class_idx in range(3):  # Three classes
+# Get SHAP values for current class
+        class_shap_values = shap_values.values[:, feature_idx, class_idx]
+        
+        # Plot scatter
+        plt.scatter(
+            X[:, feature_idx], 
+            class_shap_values,
+            alpha=0.5,
+            label=f'Class {class_idx}'
+        )
+    
+    plt.xlabel(feature, fontsize=12)
+    plt.ylabel("SHAP Value", fontsize=12)
+    plt.title(f"SHAP Dependence Plot for {feature} (External)", fontsize=14)
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f'SHAP_Dependence_{feature}_External.png', dpi=300)
+    plt.show()
